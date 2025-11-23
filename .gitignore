@@ -47,6 +47,9 @@ logs
 ai_working/tmp
 .tmp
 
+# Personal learning notes (local only)
+my_learning/
+
 # Ignore Windows Alternate Data Streams (ADS) files that may appear in WSL
 **/*Zone.Identifier
 **/*:Zone.Identifier

@@ -8,7 +8,7 @@ This file is reserved for Claude Code-specific instructions.
 
 # import the following files (using the `@` syntax):
 
-- @AGENTS.md
+- @documents/AGENTS.md
 - @DISCOVERIES.md
 - @ai_context/IMPLEMENTATION_PHILOSOPHY.md
 - @ai_context/MODULAR_DESIGN_PHILOSOPHY.md
@@ -44,6 +44,7 @@ Assistant: Use ExitPlanMode tool when you have finished planning and there are n
 ### When to Parallelize
 
 Parallelize when tasks:
+
 - Don't depend on each other's output
 - Perform similar operations on different targets
 - Can be delegated to different agents
@@ -52,7 +53,9 @@ Parallelize when tasks:
 ### Common Patterns
 
 #### Multiple File Edits
+
 When fixing the same issue across files (e.g., type errors, import updates):
+
 ```
 Single message with multiple Edit/MultiEdit calls:
 - Edit: Fix type error in src/auth.py
@@ -61,7 +64,9 @@ Single message with multiple Edit/MultiEdit calls:
 ```
 
 #### Batch Type Error Fixes
+
 When pyright reports multiple type errors:
+
 ```
 Single message addressing all errors:
 - Read: Check current implementation in affected files
@@ -71,7 +76,9 @@ Single message addressing all errors:
 ```
 
 #### Information Gathering
+
 Before implementing features:
+
 ```
 Single message with parallel reads and searches:
 - Grep: Search for existing patterns
@@ -81,7 +88,9 @@ Single message with parallel reads and searches:
 ```
 
 #### Multiple Agent Analysis
+
 For comprehensive review:
+
 ```
 Single message with multiple Task calls:
 - Task zen-architect: "Design approach"
@@ -92,14 +101,16 @@ Single message with multiple Task calls:
 ### Anti-Patterns to Avoid
 
 **Don't do this:**
+
 ```
 "Let me read the first file"
 [Read file1.py]
-"Now let me read the second file"  
+"Now let me read the second file"
 [Read file2.py]
 ```
 
 **Do this instead:**
+
 ```
 "I'll examine these files in parallel"
 [Single message: Read file1.py, Read file2.py, Read file3.py]

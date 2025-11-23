@@ -184,7 +184,7 @@ check: ## Format, lint, and type-check all code
 	@echo "Type-checking code with pyright..."
 	@VIRTUAL_ENV= uv run pyright
 	@echo "Checking for stubs and placeholders..."
-	@python tools/check_stubs.py
+	@uv run python tools/check_stubs.py
 	@echo "All checks passed!"
 
 test: ## Run all tests
@@ -202,7 +202,7 @@ worktree: ## Create a git worktree with .data copy. Usage: make worktree feature
 		echo "Error: Please provide a branch name. Usage: make worktree feature-name"; \
 		exit 1; \
 	fi
-	@python tools/create_worktree.py $(filter-out $@,$(MAKECMDGOALS))
+	@uv run python tools/create_worktree.py $(filter-out $@,$(MAKECMDGOALS))
 
 
 worktree-rm: ## Remove a git worktree and delete branch. Usage: make worktree-rm feature-name
@@ -210,14 +210,14 @@ worktree-rm: ## Remove a git worktree and delete branch. Usage: make worktree-rm
 		echo "Error: Please provide a branch name. Usage: make worktree-rm feature-name"; \
 		exit 1; \
 	fi
-	@python tools/remove_worktree.py "$(filter-out $@,$(MAKECMDGOALS))"
+	@uv run python tools/remove_worktree.py "$(filter-out $@,$(MAKECMDGOALS))"
 
 worktree-rm-force: ## Force remove a git worktree (even with changes). Usage: make worktree-rm-force feature-name
 	@if [ -z "$(filter-out $@,$(MAKECMDGOALS))" ]; then \
 		echo "Error: Please provide a branch name. Usage: make worktree-rm-force feature-name"; \
 		exit 1; \
 	fi
-	@python tools/remove_worktree.py "$(filter-out $@,$(MAKECMDGOALS))" --force
+	@uv run python tools/remove_worktree.py "$(filter-out $@,$(MAKECMDGOALS))" --force
 
 worktree-list: ## List all git worktrees
 	@git worktree list
@@ -227,24 +227,24 @@ worktree-stash: ## Hide a worktree from git (keeps directory). Usage: make workt
 		echo "Error: Please provide a worktree name. Usage: make worktree-stash feature-name"; \
 		exit 1; \
 	fi
-	@python tools/worktree_manager.py stash-by-name "$(filter-out $@,$(MAKECMDGOALS))"
+	@uv run python tools/worktree_manager.py stash-by-name "$(filter-out $@,$(MAKECMDGOALS))"
 
 worktree-unstash: ## Restore a hidden worktree. Usage: make worktree-unstash feature-name
 	@if [ -z "$(filter-out $@,$(MAKECMDGOALS))" ]; then \
 		echo "Error: Please provide a worktree name. Usage: make worktree-unstash feature-name"; \
 		exit 1; \
 	fi
-	@python tools/worktree_manager.py unstash-by-name "$(filter-out $@,$(MAKECMDGOALS))"
+	@uv run python tools/worktree_manager.py unstash-by-name "$(filter-out $@,$(MAKECMDGOALS))"
 
 worktree-adopt: ## Create worktree from remote branch. Usage: make worktree-adopt branch-name
 	@if [ -z "$(filter-out $@,$(MAKECMDGOALS))" ]; then \
 		echo "Error: Please provide a branch name. Usage: make worktree-adopt branch-name"; \
 		exit 1; \
 	fi
-	@python tools/worktree_manager.py adopt "$(filter-out $@,$(MAKECMDGOALS))"
+	@uv run python tools/worktree_manager.py adopt "$(filter-out $@,$(MAKECMDGOALS))"
 
 worktree-list-stashed: ## List all hidden worktrees
-	@python tools/worktree_manager.py list-stashed
+	@uv run python tools/worktree_manager.py list-stashed
 
 # Catch-all target to handle branch names for worktree functionality
 # and show error for invalid commands
@@ -340,24 +340,24 @@ knowledge-extract: knowledge-sync  ## DEPRECATED: Use knowledge-sync instead
 # Transcript Management
 transcript-list: ## List available conversation transcripts. Usage: make transcript-list [LAST=10]
 	@last="$${LAST:-10}"; \
-	python tools/transcript_manager.py list --last $$last
+	uv run python tools/transcript_manager.py list --last $$last
 
 transcript-load: ## Load a specific transcript. Usage: make transcript-load SESSION=id
 	@if [ -z "$(SESSION)" ]; then \
 		echo "Error: Please provide a session ID. Usage: make transcript-load SESSION=abc123"; \
 		exit 1; \
 	fi
-	@python tools/transcript_manager.py load $(SESSION)
+	@uv run python tools/transcript_manager.py load $(SESSION)
 
 transcript-search: ## Search transcripts for a term. Usage: make transcript-search TERM="your search"
 	@if [ -z "$(TERM)" ]; then \
 		echo "Error: Please provide a search term. Usage: make transcript-search TERM=\"API\""; \
 		exit 1; \
 	fi
-	@python tools/transcript_manager.py search "$(TERM)"
+	@uv run python tools/transcript_manager.py search "$(TERM)"
 
 transcript-restore: ## Restore entire conversation lineage. Usage: make transcript-restore
-	@python tools/transcript_manager.py restore
+	@uv run python tools/transcript_manager.py restore
 
 transcript-export: ## Export transcript to file. Usage: make transcript-export SESSION=id [FORMAT=text]
 	@if [ -z "$(SESSION)" ]; then \
@@ -365,7 +365,7 @@ transcript-export: ## Export transcript to file. Usage: make transcript-export S
 		exit 1; \
 	fi
 	@format="$${FORMAT:-text}"; \
-	python tools/transcript_manager.py export --session-id $(SESSION) --format $$format
+	uv run python tools/transcript_manager.py export --session-id $(SESSION) --format $$format
 
 
 # Knowledge Graph Commands
