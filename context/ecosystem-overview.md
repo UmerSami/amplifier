@@ -79,17 +79,28 @@ Multi-step AI agent orchestration for repeatable workflows:
 
 **Want to know what's been happening across the Amplifier ecosystem?** Use the ecosystem activity report recipe:
 
+**In a session (recommended):**
+```
+"run the ecosystem-activity-report recipe"
+"show me all ecosystem activity since yesterday"
+"what has robotdad been working on this week?"
+```
+
+**From CLI:**
 ```bash
 # Your activity today (default)
-amplifier recipes execute amplifier:recipes/ecosystem-activity-report.yaml
+amplifier tool invoke recipes operation=execute \
+  recipe_path=amplifier:recipes/ecosystem-activity-report.yaml
 
 # All ecosystem activity since yesterday
-amplifier recipes execute amplifier:recipes/ecosystem-activity-report.yaml \
-  --context '{"activity_scope": "all", "date_range": "since yesterday"}'
+amplifier tool invoke recipes operation=execute \
+  recipe_path=amplifier:recipes/ecosystem-activity-report.yaml \
+  context='{"activity_scope": "all", "date_range": "since yesterday"}'
 
 # Specific user's activity last week
-amplifier recipes execute amplifier:recipes/ecosystem-activity-report.yaml \
-  --context '{"activity_scope": "robotdad", "date_range": "last week"}'
+amplifier tool invoke recipes operation=execute \
+  recipe_path=amplifier:recipes/ecosystem-activity-report.yaml \
+  context='{"activity_scope": "robotdad", "date_range": "last week"}'
 ```
 
 This recipe automatically:
@@ -129,7 +140,7 @@ The kernel provides capabilities; modules decide behavior.
 
 ### For Users
 1. Start with `amplifier:docs/USER_ONBOARDING.md` (quick start and commands)
-2. Choose a profile/bundle from foundation
+2. Choose a bundle from foundation
 3. Run `amplifier run` with your chosen configuration
 
 ### For App Developers
