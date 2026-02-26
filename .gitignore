@@ -73,4 +73,5 @@ ai_working/tmp
 # Personal / fork-specific   #
 ##############################
 my_learning/
+CLAUDE.md
 docs/SYNCING_FORK.md
