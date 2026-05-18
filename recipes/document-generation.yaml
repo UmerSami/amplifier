@@ -156,9 +156,9 @@
 #     * System tries each provider in order until one is available
 #     * Enables resilience across different provider configurations
 #   - FALLBACK STRATEGY:
-#     * Haiku steps: anthropic haiku → openai gpt-4o-mini
-#     * Sonnet steps: anthropic sonnet → openai gpt-4o → azure gpt-4o
-#     * Opus steps: anthropic opus → openai gpt-4o → azure gpt-4o
+#     * Haiku steps: anthropic haiku → openai gpt-5-mini
+#     * Sonnet steps: anthropic sonnet → openai gpt-5.5 → azure gpt-5.5
+#     * Opus steps: anthropic opus → openai gpt-5.5 → azure gpt-5.5
 #   - BACKWARD COMPATIBLE: Works with older foundation versions (uses first preference)
 #
 # v7.1.0-models (2026-01-27):
@@ -498,7 +498,7 @@ stages:
           - provider: anthropic
             model: claude-haiku-*
           - provider: openai
-            model: gpt-4o-mini
+            model: gpt-5-mini
         prompt: |
           Parse the outline JSON file and extract its structure.
           
@@ -543,7 +543,7 @@ stages:
           - provider: anthropic
             model: claude-haiku-*
           - provider: openai
-            model: gpt-4o-mini
+            model: gpt-5-mini
         prompt: |
           Extract ALL unique source file references from the parsed outline.
           
@@ -660,9 +660,9 @@ stages:
           - provider: anthropic
             model: claude-sonnet-*
           - provider: openai
-            model: gpt-4o
+            model: gpt-5.5
           - provider: azure
-            model: gpt-4o
+            model: gpt-5.5
         prompt: |
           Analyze the outline structure and compute traversal context for ALL sections.
           
@@ -741,9 +741,9 @@ stages:
           - provider: anthropic
             model: claude-sonnet-*
           - provider: openai
-            model: gpt-4o
+            model: gpt-5.5
           - provider: azure
-            model: gpt-4o
+            model: gpt-5.5
         prompt: |
           Analyze the existing document and determine what updates are needed.
           
@@ -1186,9 +1186,9 @@ stages:
           - provider: anthropic
             model: claude-opus-4-*
           - provider: openai
-            model: gpt-4o
+            model: gpt-5.5
           - provider: azure
-            model: gpt-4o
+            model: gpt-5.5
         prompt: |
           ## SECTION GENERATION: {{section_id}}
           
@@ -1308,9 +1308,9 @@ stages:
           - provider: anthropic
             model: claude-sonnet-*
           - provider: openai
-            model: gpt-4o
+            model: gpt-5.5
           - provider: azure
-            model: gpt-4o
+            model: gpt-5.5
         prompt: |
           Assemble the complete document from all generated sections.
           
@@ -1376,7 +1376,7 @@ stages:
           - provider: anthropic
             model: claude-sonnet-*
           - provider: openai
-            model: gpt-4o
+            model: gpt-5.5
         prompt: |
           DESIGN INTELLIGENCE FEEDBACK: Voice & Tone Review (INITIAL GENERATION)
           
@@ -1433,6 +1433,7 @@ stages:
         output: "di_v0_voice_feedback"
         parse_json: true
         timeout: 300
+        on_error: "continue"
 
       - id: "di-v0-structure-feedback"
         agent: "design-intelligence:layout-architect"
@@ -1440,7 +1441,7 @@ stages:
           - provider: anthropic
             model: claude-sonnet-*
           - provider: openai
-            model: gpt-4o
+            model: gpt-5.5
         prompt: |
           DESIGN INTELLIGENCE FEEDBACK: Structure Review (INITIAL GENERATION)
           
@@ -1497,6 +1498,7 @@ stages:
         output: "di_v0_structure_feedback"
         parse_json: true
         timeout: 300
+        on_error: "continue"
 
       - id: "save-di-v0-feedback"
         type: "bash"
@@ -1533,6 +1535,7 @@ stages:
           
           echo "Design Intelligence v0 feedback saved to {{working_dir}}/state/di_v0_feedback.json"
         output: "di_v0_feedback_saved"
+        on_error: "continue"
 
       # ========================================================================
       # END DESIGN INTELLIGENCE FEEDBACK ON v0
@@ -1568,7 +1571,7 @@ stages:
           - provider: anthropic
             model: claude-haiku-*
           - provider: openai
-            model: gpt-4o-mini
+            model: gpt-5-mini
         prompt: |
           Check the document for STRUCTURAL issues.
           
@@ -1607,9 +1610,9 @@ stages:
           - provider: anthropic
             model: claude-sonnet-*
           - provider: openai
-            model: gpt-4o
+            model: gpt-5.5
           - provider: azure
-            model: gpt-4o
+            model: gpt-5.5
         prompt: |
           Fix STRUCTURAL issues in the document.
           
@@ -1677,6 +1680,7 @@ stages:
           
           echo "Saved v1_structural (passed: $passed_json)"
         output: "v1_saved"
+        on_error: "fail"
 
   # ==========================================================================
   # STAGE 4: VALIDATION - CONTENT (Parallel: accuracy, completeness, instructions)
@@ -1743,9 +1747,9 @@ stages:
           - provider: anthropic
             model: claude-sonnet-*
           - provider: openai
-            model: gpt-4o
+            model: gpt-5.5
           - provider: azure
-            model: gpt-4o
+            model: gpt-5.5
         prompt: |
           ## {{check.type}} VALIDATION
           
@@ -1784,7 +1788,7 @@ stages:
             "issue_count": <number>,
             "passed": true/false
           }
-        output: "check_result"
+        output: "content_check_result"
         parse_json: true
         timeout: 600
         collect: "content_check_results"
@@ -1822,9 +1826,9 @@ stages:
           - provider: anthropic
             model: claude-opus-4-*
           - provider: openai
-            model: gpt-4o
+            model: gpt-5.5
           - provider: azure
-            model: gpt-4o
+            model: gpt-5.5
         prompt: |
           ## FIX CONTENT VALIDATION ISSUES
           
@@ -2069,6 +2073,7 @@ stages:
           
           echo "Saved v2_content (all_passed: $passed_json, issues: {{aggregated_content_issues.total_issue_count}})"
         output: "v2_saved"
+        on_error: "fail"
 
   # ==========================================================================
   # STAGE 5: VALIDATION - QUALITY (Parallel: depth, coherence, crossrefs, consistency, tone)
@@ -2149,9 +2154,9 @@ stages:
           - provider: anthropic
             model: claude-sonnet-*
           - provider: openai
-            model: gpt-4o
+            model: gpt-5.5
           - provider: azure
-            model: gpt-4o
+            model: gpt-5.5
         prompt: |
           ## {{check.type}} VALIDATION
           
@@ -2190,7 +2195,7 @@ stages:
             "issue_count": <number>,
             "passed": true/false
           }
-        output: "check_result"
+        output: "quality_check_result"
         parse_json: true
         timeout: 600
         collect: "quality_check_results"
@@ -2228,9 +2233,9 @@ stages:
           - provider: anthropic
             model: claude-opus-4-*
           - provider: openai
-            model: gpt-4o
+            model: gpt-5.5
           - provider: azure
-            model: gpt-4o
+            model: gpt-5.5
         prompt: |
           ## FIX QUALITY VALIDATION ISSUES
           
@@ -2476,6 +2481,7 @@ stages:
           
           echo "Saved v3_quality (all_passed: $passed_json, issues: {{aggregated_quality_issues.total_issue_count}})"
         output: "v3_saved"
+        on_error: "fail"
 
   # ==========================================================================
   # STAGE 6: FINALIZATION
@@ -2510,9 +2516,9 @@ stages:
           - provider: anthropic
             model: claude-sonnet-*
           - provider: openai
-            model: gpt-4o
+            model: gpt-5.5
           - provider: azure
-            model: gpt-4o
+            model: gpt-5.5
         prompt: |
           FINAL VERIFICATION of the document.
           
@@ -2552,7 +2558,7 @@ stages:
           - provider: anthropic
             model: claude-sonnet-*
           - provider: openai
-            model: gpt-4o
+            model: gpt-5.5
         prompt: |
           DESIGN INTELLIGENCE FEEDBACK: Voice & Tone Review
           
@@ -2608,6 +2614,7 @@ stages:
         output: "di_voice_feedback"
         parse_json: true
         timeout: 300
+        on_error: "continue"
 
       - id: "di-structure-feedback"
         agent: "design-intelligence:layout-architect"
@@ -2615,7 +2622,7 @@ stages:
           - provider: anthropic
             model: claude-sonnet-*
           - provider: openai
-            model: gpt-4o
+            model: gpt-5.5
         prompt: |
           DESIGN INTELLIGENCE FEEDBACK: Information Architecture Review
           
@@ -2671,6 +2678,7 @@ stages:
         output: "di_structure_feedback"
         parse_json: true
         timeout: 300
+        on_error: "continue"
 
       - id: "di-outline-feedback"
         agent: "design-intelligence:layout-architect"
@@ -2678,7 +2686,7 @@ stages:
           - provider: anthropic
             model: claude-sonnet-*
           - provider: openai
-            model: gpt-4o
+            model: gpt-5.5
         prompt: |
           DESIGN INTELLIGENCE FEEDBACK: Outline Review
           
@@ -2727,6 +2735,7 @@ stages:
         output: "di_outline_feedback"
         parse_json: true
         timeout: 300
+        on_error: "continue"
 
       - id: "save-di-feedback"
         type: "bash"
@@ -2770,6 +2779,7 @@ stages:
           
           echo "Design Intelligence feedback saved to {{working_dir}}/state/di_feedback.json"
         output: "di_feedback_saved"
+        on_error: "continue"
 
       # ========================================================================
       # END DESIGN INTELLIGENCE FEEDBACK
@@ -2806,6 +2816,7 @@ stages:
           
           echo "Final document saved to {{final_output_path}}"
         output: "final_doc_saved"
+        on_error: "fail"
 
       - id: "save-v-final-version"
         type: "bash"
@@ -2856,7 +2867,7 @@ stages:
           - provider: anthropic
             model: claude-sonnet-*
           - provider: openai
-            model: gpt-4o
+            model: gpt-5.5
         prompt: |
           Generate a summary report of the document generation process.
           
@@ -2952,6 +2963,7 @@ stages:
         output: "report_result"
         parse_json: true
         timeout: 300
+        on_error: "continue"
 
       - id: "print-completion-summary"
         type: "bash"

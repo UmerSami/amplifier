@@ -1,18 +1,23 @@
 name: "amplifier-ecosystem-audit"
-description: "Audit all public Amplifier ecosystem repositories in the Microsoft GitHub organization for compliance with standards and guidelines."
-version: "1.2.0"
+description: "Audit all Amplifier ecosystem repositories (public and private) in the Microsoft GitHub organization for compliance. Uses a batched architecture (configurable batch_size, default 25) with public/private separation; scales past 100 repos and supports the audit_visibility filter."
+version: "2.0.0"
 author: "Amplifier Team"
 tags: ["audit", "compliance", "github", "amplifier", "ecosystem", "multi-repo"]
 
 # Amplifier Ecosystem Audit Recipe
 #
-# Discovers all public repositories starting with "amplifier" in the Microsoft
-# GitHub organization and audits each for compliance with:
-# - Listed in MODULES.md for discoverability
+# Discovers all repositories starting with "amplifier" in the Microsoft
+# GitHub organization (both public and private) and audits each for
+# compliance with:
+# - Listed in MODULES.md for discoverability (public repos only)
 # - Required Microsoft boilerplate files
 # - README.md Contributing and Trademarks sections
 # - GitHub Issues status
 # - Repository activity stats
+#
+# The audit report groups results by visibility (public vs private),
+# giving a full picture of the ecosystem while allowing different
+# policies per visibility level.
 #
 # Usage:
 #   # Full ecosystem audit (discovery + audit all repos)
@@ -42,8 +47,8 @@ tags: ["audit", "compliance", "github", "amplifier", "ecosystem", "multi-repo"]
 #   - Write access to repos if create_fix_prs is "true"
 
 recursion:
-  max_depth: 4
-  max_total_steps: 500
+  max_depth: 5
+  max_total_steps: 1000
 
 rate_limiting:
   max_concurrent_llm: 3
@@ -70,9 +75,21 @@ context:
   dry_run: "false"
   
   # Maximum repos to audit (safety limit - stops with error if exceeded)
-  # Override via --context '{"max_repos": 200}' if ecosystem grows
-  max_repos: 100
-  
+  # Override via --context '{"max_repos": 2000}' if ecosystem grows further.
+  # Default raised in v2.0.0 — batched architecture scales safely past 100.
+  max_repos: 1000
+
+  # Batch size for the audit-batches foreach. Each batch is processed
+  # by ecosystem-audit-batch.yaml. Default 25 keeps per-batch wall time
+  # under ~25 minutes at parallel: 2.
+  batch_size: 25
+
+  # Visibility filter for batched runs:
+  #   "all"     — audit both public and private (default)
+  #   "public"  — public repos only; private batches skipped at split time
+  #   "private" — private repos only; public batches skipped at split time
+  audit_visibility: "all"
+
   # Working directory for intermediate files
   working_dir: "./ai_working/ecosystem-audit"
   
@@ -100,6 +117,8 @@ stages:
         type: "bash"
         parse_json: true
         command: |
+          set -euo pipefail
+          
           # Check if repos were provided manually
           MANUAL_REPOS='{{repos}}'
           
@@ -107,41 +126,60 @@ stages:
             # Use manually provided repos
             echo "$MANUAL_REPOS" | jq '{
               source: "manual",
-              repos: [.[] | {owner: "microsoft", name: ., url: ("https://github.com/microsoft/" + .)}]
+              repos: [.[] | {owner: "microsoft", name: ., url: ("https://github.com/microsoft/" + .), visibility: "unknown"}]
             }'
           else
-            # Discover repos from GitHub using Search API
-            # NOTE: gh repo list is unreliable for large orgs - use search API instead
-            echo "Discovering amplifier* repos in Microsoft org via Search API..." >&2
+            # Discover repos using REST API with pagination
+            # This queries the org directly — no search index, no indexing delay
+            echo "Discovering amplifier* repos in Microsoft org via REST API (paginated)..." >&2
             
-            # Use GitHub Search API which reliably finds all matching repos
-            SEARCH_RESULTS=$(gh api "search/repositories?q=amplifier+in:name+org:microsoft+is:public&per_page=100" 2>&1)
+            REPOS_JSON=$(gh api --paginate "orgs/microsoft/repos?type=all&per_page=100" \
+              --jq '[.[] | select(.name | test("^amplifier"; "i")) | select(.archived == false) | {
+                owner: "microsoft",
+                name: .name,
+                url: .html_url,
+                description: (.description // ""),
+                visibility: .visibility
+              }]' 2>/dev/null | jq -s 'add // []')
             
-            if echo "$SEARCH_RESULTS" | jq -e '.items' > /dev/null 2>&1; then
-              echo "$SEARCH_RESULTS" | jq '{
-                source: "search_api",
-                repos: [.items[] | select(.archived == false) | {
-                  owner: "microsoft",
-                  name: .name,
-                  url: .html_url,
-                  description: (.description // "")
-                }]
-              }'
+            if [ -n "$REPOS_JSON" ] && echo "$REPOS_JSON" | jq -e 'length > 0' > /dev/null 2>&1; then
+              REPO_COUNT=$(echo "$REPOS_JSON" | jq 'length')
+              PUBLIC_COUNT=$(echo "$REPOS_JSON" | jq '[.[] | select(.visibility == "public")] | length')
+              PRIVATE_COUNT=$(echo "$REPOS_JSON" | jq '[.[] | select(.visibility != "public")] | length')
+              echo "Found $REPO_COUNT repos ($PUBLIC_COUNT public, $PRIVATE_COUNT private)" >&2
+              
+              echo "$REPOS_JSON" | jq '{source: "rest_api_paginated", repos: .}'
             else
-              echo "Search API failed, falling back to gh repo list..." >&2
-              gh repo list microsoft --visibility=public --json name,url,description,isArchived --limit 500 | \
-                jq '[.[] | select(.name | startswith("amplifier")) | select(.isArchived == false)] | {
-                  source: "discovery_fallback",
-                  repos: [.[] | {owner: "microsoft", name: .name, url: .url, description: (.description // "")}]
+              # Fallback: Search API (may miss recently created repos)
+              echo "REST API pagination failed, falling back to Search API..." >&2
+              echo "WARNING: Search API may miss recently created repos due to indexing delay" >&2
+              
+              SEARCH_RESULTS=$(gh api "search/repositories?q=amplifier+in:name+org:microsoft&per_page=100" 2>&1)
+              
+              if echo "$SEARCH_RESULTS" | jq -e '.items' > /dev/null 2>&1; then
+                echo "$SEARCH_RESULTS" | jq '{
+                  source: "search_api_fallback",
+                  repos: [.items[] | select(.archived == false) | {
+                    owner: "microsoft",
+                    name: .name,
+                    url: .html_url,
+                    description: (.description // ""),
+                    visibility: .visibility
+                  }]
                 }'
+              else
+                echo "ERROR: Both REST API and Search API failed" >&2
+                echo '{"source": "error", "repos": []}'
+                exit 1
+              fi
             fi
           fi
         output: "microsoft_repos"
-        timeout: 180
+        timeout: 300
         retry:
           max_attempts: 3
           backoff: "exponential"
-          initial_delay: 5
+          initial_delay: 10
 
       - id: "discover-community-repos"
         condition: "{{include_community}} == 'true'"
@@ -193,23 +231,30 @@ stages:
           echo "DEBUG: microsoft_repos repo count: $(jq '.repos | length' "$WORKING_DIR/microsoft_repos.json" 2>/dev/null || echo 'parse error')" >&2
           
           if [ "$INCLUDE_COMMUNITY" = "true" ]; then
-            # Merge Microsoft and community repos
+            # Merge Microsoft and community repos, deduplicate
             jq --slurpfile community "$WORKING_DIR/community_repos.json" '
               .repos += ($community[0].repos // []) |
+              .repos = (.repos | unique_by(.name)) |
               .total = (.repos | length) |
               .microsoft_count = ([.repos[] | select(.owner == "microsoft")] | length) |
-              .community_count = ([.repos[] | select(.owner != "microsoft")] | length)
+              .community_count = ([.repos[] | select(.owner != "microsoft")] | length) |
+              .public_count = ([.repos[] | select(.visibility == "public")] | length) |
+              .private_count = ([.repos[] | select(.visibility == "private")] | length)
             ' "$WORKING_DIR/microsoft_repos.json" | tee "$WORKING_DIR/all_repos.json"
           else
-            # Microsoft repos only
+            # Microsoft repos only, deduplicate
             jq '
+              .repos = (.repos | unique_by(.name)) |
               .total = (.repos | length) |
               .microsoft_count = .total |
-              .community_count = 0
+              .community_count = 0 |
+              .public_count = ([.repos[] | select(.visibility == "public")] | length) |
+              .private_count = ([.repos[] | select(.visibility == "private")] | length)
             ' "$WORKING_DIR/microsoft_repos.json" | tee "$WORKING_DIR/all_repos.json"
           fi
         output: "all_repos"
         timeout: 30
+        on_error: "fail"
 
       - id: "check-repo-limit"
         type: "bash"
@@ -261,52 +306,195 @@ stages:
           fi
         output: "repo_limit_check"
         timeout: 30
+        on_error: "fail"
+
+      - id: "split-into-batches"
+        type: "bash"
+        parse_json: true
+        command: |
+          set -euo pipefail
+          WORKING_DIR="{{working_dir}}"
+          BATCH_SIZE={{batch_size}}
+          AUDIT_VIS="{{audit_visibility}}"
+
+          mkdir -p "$WORKING_DIR/batches"
+
+          # Partition repos by visibility.
+          jq '[.repos[] | select(.visibility == "public")]' \
+            "$WORKING_DIR/all_repos.json" > "$WORKING_DIR/public_repos.json"
+          jq '[.repos[] | select(.visibility != "public")]' \
+            "$WORKING_DIR/all_repos.json" > "$WORKING_DIR/private_repos.json"
+
+          PUBLIC_COUNT=$(jq 'length' "$WORKING_DIR/public_repos.json")
+          PRIVATE_COUNT=$(jq 'length' "$WORKING_DIR/private_repos.json")
+
+          INCLUDE_PUBLIC=true
+          INCLUDE_PRIVATE=true
+          case "$AUDIT_VIS" in
+            public)  INCLUDE_PRIVATE=false ;;
+            private) INCLUDE_PUBLIC=false ;;
+            all|"")  ;;  # both included
+            *) echo "ERROR: invalid audit_visibility '$AUDIT_VIS' (expected all|public|private)" >&2; exit 1 ;;
+          esac
+
+          PUBLIC_BATCHES=()
+          PRIVATE_BATCHES=()
+          ALL_BATCHES=()
+
+          # Chunk public repos.
+          if [ "$INCLUDE_PUBLIC" = "true" ] && [ "$PUBLIC_COUNT" -gt 0 ]; then
+            i=1
+            while read -r chunk; do
+              [ -z "$chunk" ] && continue
+              BATCH_ID=$(printf "batch-pub-%02d" "$i")
+              OUT="$WORKING_DIR/batches/${BATCH_ID}.json"
+              jq -n \
+                --arg id "$BATCH_ID" \
+                --arg vis "public" \
+                --argjson repos "$chunk" \
+                '{batch_id: $id, visibility: $vis, repos: $repos}' > "$OUT"
+              PUBLIC_BATCHES+=("$OUT")
+              ALL_BATCHES+=("$OUT")
+              i=$((i + 1))
+            done < <(jq -c "_nwise($BATCH_SIZE)" "$WORKING_DIR/public_repos.json")
+          fi
+
+          # Chunk private repos (always after public for ordered execution).
+          if [ "$INCLUDE_PRIVATE" = "true" ] && [ "$PRIVATE_COUNT" -gt 0 ]; then
+            i=1
+            while read -r chunk; do
+              [ -z "$chunk" ] && continue
+              BATCH_ID=$(printf "batch-priv-%02d" "$i")
+              OUT="$WORKING_DIR/batches/${BATCH_ID}.json"
+              jq -n \
+                --arg id "$BATCH_ID" \
+                --arg vis "private" \
+                --argjson repos "$chunk" \
+                '{batch_id: $id, visibility: $vis, repos: $repos}' > "$OUT"
+              PRIVATE_BATCHES+=("$OUT")
+              ALL_BATCHES+=("$OUT")
+              i=$((i + 1))
+            done < <(jq -c "_nwise($BATCH_SIZE)" "$WORKING_DIR/private_repos.json")
+          fi
+
+          # Build the JSON output consumed by downstream steps. Use
+          # printf-piped-into-jq pattern so empty arrays serialise correctly.
+          ALL_BATCHES_JSON=$(printf '%s\n' "${ALL_BATCHES[@]:-}" | jq -R . | jq -s 'map(select(length > 0))')
+          PUBLIC_BATCHES_JSON=$(printf '%s\n' "${PUBLIC_BATCHES[@]:-}" | jq -R . | jq -s 'map(select(length > 0))')
+          PRIVATE_BATCHES_JSON=$(printf '%s\n' "${PRIVATE_BATCHES[@]:-}" | jq -R . | jq -s 'map(select(length > 0))')
+
+          jq -n \
+            --argjson public_count "$PUBLIC_COUNT" \
+            --argjson private_count "$PRIVATE_COUNT" \
+            --arg audit_visibility "$AUDIT_VIS" \
+            --argjson batch_size "$BATCH_SIZE" \
+            --argjson batch_files "$ALL_BATCHES_JSON" \
+            --argjson public_batches "$PUBLIC_BATCHES_JSON" \
+            --argjson private_batches "$PRIVATE_BATCHES_JSON" \
+            '{
+              public_count: $public_count,
+              private_count: $private_count,
+              audit_visibility: $audit_visibility,
+              batch_size: $batch_size,
+              batch_files: $batch_files,
+              public_batches: $public_batches,
+              private_batches: $private_batches,
+              total_batches: ($batch_files | length),
+              public_batch_count: ($public_batches | length),
+              private_batch_count: ($private_batches | length)
+            }'
+        output: "split"
+        timeout: 60
+        on_error: "fail"
 
       - id: "create-audit-plan"
         agent: "foundation:zen-architect"
         mode: "ANALYZE"
         prompt: |
           Create an audit plan summary for review before proceeding. Return ONLY the markdown content.
-          
+
           ## Discovered Repositories
-          
+
           {{all_repos}}
-          
+
+          ## Batch Plan
+
+          {{split}}
+
           ## Audit Configuration
-          
+
           - **Create Fix PRs**: {{create_fix_prs}}
           - **Dry-Run Mode**: {{dry_run}}
           - **Include Community Repos**: {{include_community}}
           - **Max Repos Limit**: {{max_repos}}
+          - **Batch Size**: {{batch_size}}
+          - **Audit Visibility**: {{audit_visibility}}
           - **Working Directory**: {{working_dir}}
-          
+
           ## Output Required
-          
-          Generate a clear markdown summary:
-          
+
+          Generate this exact markdown structure (substituting real values):
+
           ## Amplifier Ecosystem Audit Plan
-          
+
           **Date**: [current date]
-          **Total Repositories**: [count]
-          - Microsoft repos: [count]
-          - Community repos: [count]
-          
-          ### Repositories to Audit
-          
-          #### Microsoft Organization
+          **Total Repositories**: [from all_repos.total]
+          - Public repos: [from split.public_count]
+          - Private repos: [from split.private_count]
+          - Community repos: [if include_community is true, count from all_repos]
+
+          **Audit Visibility Filter**: [from split.audit_visibility — note clearly if a group is being skipped]
+          **Batch Size**: [from split.batch_size]
+          **Total Batches**: [from split.total_batches] ([from split.public_batch_count] public, [from split.private_batch_count] private)
+
+          ### Execution Plan
+
+          1. Public batches run first (sequentially), one batch at a time.
+          2. Private batches run after all public batches complete.
+          3. Each batch processes its repos in parallel (default 2 concurrent).
+          4. Findings flushed to disk as JSONL after each batch.
+
+          Estimated total wall time: ~[(public_count + private_count) * 75 / 2 / 60 minutes, rounded]
+
+          ### Public Batches ([from split.public_batch_count])
+
+          List one row per public batch file from split.public_batches. Resolve
+          repo counts by reading the underlying JSON.
+          | # | Batch ID | Repo count |
+          |---|----------|------------|
+          | 1 | batch-pub-01 | NN |
+          | ... | ... | ... |
+
+          ### Private Batches ([from split.private_batch_count])
+
+          | # | Batch ID | Repo count |
+          |---|----------|------------|
+          | 1 | batch-priv-01 | NN |
+          | ... | ... | ... |
+
+          ### Public Repositories
+
           | # | Repository | Description |
           |---|------------|-------------|
           | 1 | repo-name | description |
           | ... | ... | ... |
-          
+
+          ### Private Repositories
+
+          | # | Repository | Description |
+          |---|------------|-------------|
+          | 1 | repo-name | description |
+          | ... | ... | ... |
+
           #### Community (if applicable)
+
           | # | Repository | Owner | Description |
           |---|------------|-------|-------------|
           | 1 | repo-name | owner | description |
-          
+
           ### Audit Checks Per Repository
-          
-          1. Listed in MODULES.md
+
+          1. Listed in MODULES.md (public repos only)
           2. CODE_OF_CONDUCT.md (verbatim match)
           3. SECURITY.md (verbatim match)
           4. SUPPORT.md (verbatim match)
@@ -315,16 +503,17 @@ stages:
           7. README.md Trademarks section
           8. GitHub Issues status
           9. Open PRs and recent activity
-          
-          ### Estimated Time
-          
-          ~2-3 minutes per repository = ~[total] minutes total
-          
+
+          Public repos audited against full Microsoft OSS standards.
+          Private repos audited against internal compliance standards.
+
           ### Fix PRs
-          
+
           Fix PR creation: [Enabled/Disabled]
+          Note: Fix PRs for private repos can be skipped if desired.
         output: "audit_plan"
-        timeout: 120
+        timeout: 180
+        on_error: "fail"
 
     approval:
       required: true
@@ -343,21 +532,21 @@ stages:
   # ==========================================================================
   - name: "audits"
     steps:
-      - id: "audit-repos"
-        foreach: "{{all_repos.repos}}"
-        as: "repo"
-        parallel: 2
-        collect: "audit_results"
+      - id: "audit-batches"
+        foreach: "{{split.batch_files}}"
+        as: "batch_file"
+        parallel: 1                     # sequential batches (public-first, then private)
+        max_iterations: 100             # explicit ceiling — adjust if batch_size shrinks
+        collect: "batch_results"
         type: "recipe"
-        recipe: "amplifier/recipes/repo-audit.yaml"
+        recipe: "ecosystem-audit-batch.yaml"
         context:
-          repo_owner: "{{repo.owner}}"
-          repo_name: "{{repo.name}}"
+          batch_file: "{{batch_file}}"
+          working_dir: "{{working_dir}}"
           create_fix_pr: "{{create_fix_prs}}"
           dry_run: "{{dry_run}}"
-          working_dir: "{{working_dir}}/repos"
-        output: "single_audit"
-        timeout: 600
+        output: "batch_outcome"
+        timeout: 10800                  # 3h per batch (generous for batch_size=25)
         on_error: "continue"
 
   # ==========================================================================
@@ -368,6 +557,7 @@ stages:
       - id: "collect-individual-reports"
         type: "bash"
         command: |
+          set -euo pipefail
           echo "Collecting individual audit reports..."
           
           REPORTS_DIR="{{working_dir}}/repos"
@@ -389,56 +579,102 @@ stages:
           cat "$SUMMARY_FILE"
         output: "collected_reports"
         timeout: 120
+        on_error: "continue"
 
       - id: "aggregate-results"
         type: "bash"
         parse_json: true
         command: |
-          REPORTS_DIR="{{working_dir}}/repos"
-          
-          # Initialize counters
+          set -euo pipefail
+          FINDINGS_DIR="{{working_dir}}/findings"
+
+          if [ ! -d "$FINDINGS_DIR" ]; then
+            echo "ERROR: findings directory missing: $FINDINGS_DIR" >&2
+            jq -n '{total_repos: 0, error: "no findings directory"}'
+            exit 0
+          fi
+
+          # Initialise counters
           TOTAL=0
           PASS=0
           ATTENTION=0
           CRITICAL=0
-          
-          # Collect repos by status
-          REPOS_PASS=""
-          REPOS_ATTENTION=""
-          REPOS_CRITICAL=""
-          
-          for report in "$REPORTS_DIR"/*/audit-report.md; do
-            if [ -f "$report" ]; then
-              REPO_NAME=$(basename "$(dirname "$report")")
+          PUBLIC_TOTAL=0
+          PRIVATE_TOTAL=0
+
+          # Per-status repo lists (build as JSON arrays via jq)
+          REPOS_PASS_TMP=$(mktemp)
+          REPOS_ATTENTION_TMP=$(mktemp)
+          REPOS_CRITICAL_TMP=$(mktemp)
+          PUBLIC_REPOS_TMP=$(mktemp)
+          PRIVATE_REPOS_TMP=$(mktemp)
+          trap 'rm -f "$REPOS_PASS_TMP" "$REPOS_ATTENTION_TMP" "$REPOS_CRITICAL_TMP" "$PUBLIC_REPOS_TMP" "$PRIVATE_REPOS_TMP"' EXIT
+
+          # Walk every JSONL findings file (one per batch).
+          # Each line: {repo, owner, status, visibility, batch_id}
+          shopt -s nullglob
+          for jsonl in "$FINDINGS_DIR"/*.jsonl; do
+            while IFS= read -r line; do
+              [ -z "$line" ] && continue
+              REPO=$(echo "$line" | jq -r '.repo')
+              STATUS=$(echo "$line" | jq -r '.status')
+              VISIBILITY=$(echo "$line" | jq -r '.visibility')
+
               TOTAL=$((TOTAL + 1))
-              
-              # Determine status from report content
-              if grep -q "Overall Status.*PASS" "$report" 2>/dev/null; then
-                PASS=$((PASS + 1))
-                REPOS_PASS="$REPOS_PASS\"$REPO_NAME\","
-              elif grep -q "Overall Status.*CRITICAL" "$report" 2>/dev/null; then
-                CRITICAL=$((CRITICAL + 1))
-                REPOS_CRITICAL="$REPOS_CRITICAL\"$REPO_NAME\","
+
+              if [ "$VISIBILITY" = "public" ]; then
+                PUBLIC_TOTAL=$((PUBLIC_TOTAL + 1))
+                echo "$REPO" >> "$PUBLIC_REPOS_TMP"
               else
-                ATTENTION=$((ATTENTION + 1))
-                REPOS_ATTENTION="$REPOS_ATTENTION\"$REPO_NAME\","
+                PRIVATE_TOTAL=$((PRIVATE_TOTAL + 1))
+                echo "$REPO" >> "$PRIVATE_REPOS_TMP"
               fi
-            fi
+
+              case "$STATUS" in
+                PASS)
+                  PASS=$((PASS + 1))
+                  echo "$REPO" >> "$REPOS_PASS_TMP"
+                  ;;
+                CRITICAL)
+                  CRITICAL=$((CRITICAL + 1))
+                  echo "$REPO" >> "$REPOS_CRITICAL_TMP"
+                  ;;
+                *)
+                  ATTENTION=$((ATTENTION + 1))
+                  echo "$REPO" >> "$REPOS_ATTENTION_TMP"
+                  ;;
+              esac
+            done < "$jsonl"
           done
-          
-          # Clean up trailing commas and format as JSON arrays
-          REPOS_PASS=$(echo "[$REPOS_PASS]" | sed 's/,]/]/')
-          REPOS_ATTENTION=$(echo "[$REPOS_ATTENTION]" | sed 's/,]/]/')
-          REPOS_CRITICAL=$(echo "[$REPOS_CRITICAL]" | sed 's/,]/]/')
-          
+
+          # Convert tmp files to JSON arrays.
+          jq_array_from_lines() {
+            local f="$1"
+            if [ -s "$f" ]; then
+              jq -R -s -c 'split("\n") | map(select(length > 0))' "$f"
+            else
+              echo "[]"
+            fi
+          }
+
+          REPOS_PASS=$(jq_array_from_lines "$REPOS_PASS_TMP")
+          REPOS_ATTENTION=$(jq_array_from_lines "$REPOS_ATTENTION_TMP")
+          REPOS_CRITICAL=$(jq_array_from_lines "$REPOS_CRITICAL_TMP")
+          PUBLIC_REPOS=$(jq_array_from_lines "$PUBLIC_REPOS_TMP")
+          PRIVATE_REPOS=$(jq_array_from_lines "$PRIVATE_REPOS_TMP")
+
           jq -n \
             --argjson total "$TOTAL" \
             --argjson pass "$PASS" \
             --argjson attention "$ATTENTION" \
             --argjson critical "$CRITICAL" \
+            --argjson public_total "$PUBLIC_TOTAL" \
+            --argjson private_total "$PRIVATE_TOTAL" \
             --argjson repos_pass "$REPOS_PASS" \
             --argjson repos_attention "$REPOS_ATTENTION" \
             --argjson repos_critical "$REPOS_CRITICAL" \
+            --argjson public_repos "$PUBLIC_REPOS" \
+            --argjson private_repos "$PRIVATE_REPOS" \
             '{
               total_repos: $total,
               by_status: {
@@ -446,12 +682,19 @@ stages:
                 needs_attention: $attention,
                 critical: $critical
               },
+              by_visibility: {
+                public: $public_total,
+                private: $private_total
+              },
               repos_passing: $repos_pass,
               repos_needing_attention: $repos_attention,
-              repos_critical: $repos_critical
+              repos_critical: $repos_critical,
+              public_repos: $public_repos,
+              private_repos: $private_repos
             }'
         output: "aggregate_data"
         timeout: 120
+        on_error: "continue"
 
       - id: "generate-ecosystem-report"
         agent: "foundation:zen-architect"
@@ -473,6 +716,8 @@ stages:
           
           **Generated**: [current date/time]
           **Repositories Audited**: [total count]
+          - Public: [count]
+          - Private: [count]
           
           ## Executive Summary
           
@@ -492,20 +737,32 @@ stages:
           - Common patterns of compliance/non-compliance
           - Priority areas for improvement
           
-          ## Repositories by Status
+          ## Public Repositories ([count])
           
-          ### Passing (N repos)
-          [List repos that passed all checks]
+          ### Passing
+          [List public repos that passed all checks]
           
-          ### Needs Attention (N repos)
-          [List repos with warnings or recommendations]
+          ### Needs Attention
+          [List public repos with warnings or recommendations]
           
-          ### Critical (N repos)
-          [List repos with critical issues requiring immediate attention]
+          ### Critical
+          [List public repos with critical issues]
+          
+          ## Private Repositories ([count])
+          
+          ### Passing
+          [List private repos that passed all checks]
+          
+          ### Needs Attention
+          [List private repos with warnings or recommendations]
+          
+          ### Critical
+          [List private repos with critical issues]
           
           ## Repository Details
           
           For each repository, summarize:
+          - Visibility (public/private)
           - Overall status
           - Key issues found
           - Recommended actions
@@ -517,6 +774,10 @@ stages:
           2. [Medium priority - warnings]
           3. [Lower priority - recommendations]
           
+          Note: Fix PRs are typically created for public repos. Private repo
+          issues are reported for awareness but may follow different remediation
+          processes.
+          
           ## Next Steps
           
           1. [Immediate actions]
@@ -524,9 +785,10 @@ stages:
           3. [Long-term governance recommendations]
           
           ---
-          *Generated by Amplifier ecosystem-audit recipe v1.2.0*
+          *Generated by Amplifier ecosystem-audit recipe v2.0.0*
         output: "ecosystem_report_content"
         timeout: 600
+        on_error: "fail"
 
       - id: "write-ecosystem-report"
         type: "bash"
@@ -543,6 +805,7 @@ stages:
           echo "Ecosystem report written: $REPORT_PATH ($(wc -c < "$REPORT_PATH") bytes)"
         output: "report_write_result"
         timeout: 30
+        on_error: "fail"
 
       - id: "save-aggregate-data"
         type: "bash"
@@ -554,10 +817,12 @@ stages:
           echo "Aggregate data saved to: {{working_dir}}/reports/aggregate-data.json"
         output: "aggregate_save_result"
         timeout: 30
+        on_error: "continue"
 
       - id: "completion-summary"
         type: "bash"
         command: |
+          set -euo pipefail
           REPORT_PATH="{{working_dir}}/reports/{{report_filename}}"
           
           echo "========================================"
@@ -577,6 +842,8 @@ stages:
           echo "Quick Stats:"
           cat "{{working_dir}}/reports/aggregate-data.json" 2>/dev/null | jq -r '
             "  Total repos: \(.total_repos)",
+            "    Public: \(.by_visibility.public // 0)",
+            "    Private: \(.by_visibility.private // 0)",
             "  Passing: \(.by_status.pass)",
             "  Needs attention: \(.by_status.needs_attention)", 
             "  Critical: \(.by_status.critical)"
@@ -588,3 +855,4 @@ stages:
           cat "$REPORT_PATH" 2>/dev/null || echo "(Report not found at $REPORT_PATH)"
         output: "final_output"
         timeout: 60
+        on_error: "continue"
